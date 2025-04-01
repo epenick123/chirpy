@@ -29,14 +29,19 @@ func (cfg *apiConfig) metricsHandler(w http.ResponseWriter, r *http.Request) {
 	count := cfg.fileserverHits.Load()
 
 	// Set the Content-Type header
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	// Write the response
 	w.WriteHeader(http.StatusOK)
 
 	// Format the response according to the instructions: "Hits: x"
 	// Use fmt.Sprintf to format the string
-	w.Write([]byte(fmt.Sprintf("Hits: %d", count)))
+	w.Write([]byte(fmt.Sprintf(`<html>
+  		<body>
+    	<h1>Welcome, Chirpy Admin</h1>
+    	<p>Chirpy has been visited %d times!</p>
+  		</body>
+		</html>`, count)))
 }
 
 func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
@@ -63,8 +68,8 @@ func main() {
 	// Register the handler for /app - this will catch both /app and /app/
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(handler))
 
-	mux.HandleFunc("GET /api/metrics", apiCfg.metricsHandler)
-	mux.HandleFunc("POST /api/reset", apiCfg.resetHandler)
+	mux.HandleFunc("GET /admin/metrics", apiCfg.metricsHandler)
+	mux.HandleFunc("POST /admin/reset", apiCfg.resetHandler)
 	mux.HandleFunc("GET /api/healthz", healthzHandler)
 
 	server := http.Server{
