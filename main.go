@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync/atomic"
 )
 
@@ -55,6 +57,56 @@ func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+func (cfg *apiConfig) validationHandler(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Body string `json:"body"`
+	}
+
+	type response struct {
+		CleanedBody string `json:"cleaned_body"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+
+	if len(params.Body) > 140 {
+		respondWithError(w, http.StatusBadRequest, "Chirp is too long")
+		return
+	}
+
+	// Clean the text and respond with the cleaned version
+	cleanedText := cleanProfaneWords(params.Body)
+	respondWithJSON(w, http.StatusOK, response{CleanedBody: cleanedText})
+}
+
+func cleanProfaneWords(text string) string {
+	words := strings.Split(text, " ")
+	for i, word := range words {
+		if strings.ToLower(word) == "kerfuffle" || strings.ToLower(word) == "sharbert" || strings.ToLower(word) == "fornax" {
+			words[i] = "****"
+		}
+	}
+
+	cleanedText := strings.Join(words, " ")
+	fmt.Println(cleanedText)
+	return cleanedText
+}
+
+func respondWithError(w http.ResponseWriter, code int, msg string) {
+	respondWithJSON(w, code, map[string]string{"error": msg})
+}
+
+func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(payload)
+}
+
 func main() {
 	apiCfg := apiConfig{}
 	mux := http.NewServeMux()
@@ -71,6 +123,7 @@ func main() {
 	mux.HandleFunc("GET /admin/metrics", apiCfg.metricsHandler)
 	mux.HandleFunc("POST /admin/reset", apiCfg.resetHandler)
 	mux.HandleFunc("GET /api/healthz", healthzHandler)
+	mux.HandleFunc("POST /api/validate_chirp", apiCfg.validationHandler)
 
 	server := http.Server{
 		Addr:    ":8080",
