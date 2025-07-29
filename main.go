@@ -30,18 +30,26 @@ type User struct {
 	Email     string    `json:"email"`
 }
 
+type response struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"` // Corrected type and added tag
+	UpdatedAt time.Time `json:"updated_at"` // Corrected type and added tag
+	Body      string    `json:"body"`       // Added tag
+	UserID    string    `json:"user_id"`    // Added tag
+}
+
+type chirpResponse struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    string    `json:"user_id"`
+}
+
 func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Body   string `json:"body"`
 		UserID string `json:"user_id"`  // Make sure this json tag is correct
-	}
-
-	type response struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"` // Corrected type and added tag
-		UpdatedAt time.Time `json:"updated_at"` // Corrected type and added tag
-		Body      string    `json:"body"`       // Added tag
-		UserID    string    `json:"user_id"`    // Added tag
 	}
 	
 	req := r.Method
@@ -99,7 +107,6 @@ func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-
 		respondWithJSON(w, http.StatusCreated, response{
 			ID: new_chirp.ID,
 			CreatedAt: new_chirp.CreatedAt,
@@ -112,11 +119,53 @@ func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
 
 	} else if req == http.MethodGet {
 		chirps_slice := []database.Chirp{}
-		chirps_slice, err = 
+		formatted_slice := []chirpResponse{}
+		chirps_slice, err := cfg.db.GetChirps(r.Context())
 
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, "HTTP request error")
+			return
+		}
+		for _, chirp := range chirps_slice {
+			formatted_chirp := chirpResponse{
+				ID: chirp.ID,
+				CreatedAt: chirp.CreatedAt,
+				UpdatedAt: chirp.UpdatedAt,
+				Body: chirp.Body,
+				UserID: chirp.UserID.String(),
+			}
+			formatted_slice = append(formatted_slice, formatted_chirp)
+		}
+		respondWithJSON(w,200,formatted_slice)
 	} else {
 		respondWithError(w, http.StatusBadRequest, "HTTP request error")
+		return
 	}
+}
+
+func (cfg *apiConfig) singleChirpHandler(w http.ResponseWriter, r *http.Request) {
+	path_value := r.PathValue("chirpID")
+	requested_id, err := uuid.Parse(path_value)
+	if err != nil {
+		respondWithError(w, 404, "Chirp UUID error")
+		return
+	}
+	found_chirp, err := cfg.db.GetChirp(r.Context(), requested_id)
+	if err == sql.ErrNoRows {
+		respondWithError(w, 404, "Error retrieving Chirp")
+		return
+	} else if err != nil {
+		respondWithError(w, 500, "Other Database Error")
+		return
+	}
+	formatted_chirp := chirpResponse {
+		ID: found_chirp.ID,
+		CreatedAt: found_chirp.CreatedAt,
+		UpdatedAt: found_chirp.UpdatedAt,
+		Body: found_chirp.Body,
+		UserID: found_chirp.UserID.String(),
+	}
+	respondWithJSON(w, 200, formatted_chirp)
 }
 
 func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) {
@@ -270,6 +319,7 @@ func main() {
 	mux.HandleFunc("/api/healthz", healthzHandler)
 	mux.HandleFunc("/api/users", apiCfg.createUserHandler)
 	mux.HandleFunc("/api/chirps", apiCfg.chirpsHandler)
+	mux.HandleFunc("/api/chirps/{chirpID}", apiCfg.singleChirpHandler)
 
 	server := http.Server{
 		Addr:    ":8080",
