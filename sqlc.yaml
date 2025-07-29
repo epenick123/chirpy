@@ -1,0 +1,8 @@
+version: "1"
+
+packages:
+  - name: "database"
+    path: "internal/database"               # Output directory for generated code
+    queries: "sql/queries/users.sql"    # Path to your SQL query files
+    schema: "migrations/*.sql"         # Path to your schema migration files
+    engine: "postgresql"               # Specify Postgres as your database engine

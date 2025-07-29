@@ -1,16 +1,179 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
+	"time"
+
+	"github.com/epenick123/chirpy/internal/database"
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	db             *database.Queries
+	platform       string
+}
+
+type User struct {
+	ID        string    `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+}
+
+func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Body   string `json:"body"`
+		UserID string `json:"user_id"`  // Make sure this json tag is correct
+	}
+
+	type response struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"` // Corrected type and added tag
+		UpdatedAt time.Time `json:"updated_at"` // Corrected type and added tag
+		Body      string    `json:"body"`       // Added tag
+		UserID    string    `json:"user_id"`    // Added tag
+	}
+	
+	req := r.Method
+	if req == http.MethodPost {
+		// Decode JSON from the request body
+		decoder := json.NewDecoder(r.Body)
+		params := parameters{}
+		err := decoder.Decode(&params)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+			return
+		}
+
+		// Convert the UserID to a UUID
+		userID, err := uuid.Parse(params.UserID)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+			return
+		}
+
+		user, err := cfg.db.GetUser(r.Context(), userID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				respondWithError(w, http.StatusNotFound, "User not found")
+			} else {
+				respondWithError(w, http.StatusInternalServerError, "Error fetching user")
+			}
+			return
+		}
+
+		// Example use of `user`:
+		fmt.Printf("User email: %s\n", user.Email)
+
+		fmt.Printf("%+v\n", cfg.db)
+
+
+		// Clean profanity and return response
+		cleanedText := cleanProfaneWords(params.Body)
+		// Ensure chirp body length does not exceed 140 characters
+		if len(cleanedText) > 140 {
+			respondWithError(w, http.StatusBadRequest, "Chirp is too long")
+			return
+		}
+		
+		newChirpID := uuid.New() // Generate the ID here
+		createParams := database.CreateChirpParams{ // Use the generated struct
+    		ID:     newChirpID,
+    		Body:   cleanedText,
+    		UserID: userID,
+		}
+		
+		new_chirp, err := cfg.db.CreateChirp(r.Context(), createParams)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError , "Error creating chirp")
+			return
+		}
+
+
+		respondWithJSON(w, http.StatusCreated, response{
+			ID: new_chirp.ID,
+			CreatedAt: new_chirp.CreatedAt,
+			UpdatedAt: new_chirp.UpdatedAt,
+			Body: new_chirp.Body,
+			UserID: new_chirp.UserID.String(),
+		})
+
+		
+
+	} else if req == http.MethodGet {
+		chirps_slice := []database.Chirp{}
+		chirps_slice, err = 
+
+	} else {
+		respondWithError(w, http.StatusBadRequest, "HTTP request error")
+	}
+}
+
+func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) {
+	// Define the expected request structure
+	type parameters struct {
+		Email string `json:"email"`
+	}
+
+	// Parse JSON from the request body
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+
+	user, err := cfg.db.CreateUser(r.Context(), params.Email)
+if err != nil {
+    respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to create user: %v", err))
+    return
+}
+
+	responseUser := User{
+		ID:        user.ID.String(),
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	}
+
+	respondWithJSON(w, http.StatusCreated, responseUser)
+
+}
+
+func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
+	// Check if platform is "dev"
+	// If not, return 403
+	// Delete users and reset counter
+	if cfg.platform != "dev" {
+		respondWithError(w, http.StatusForbidden, "This endpoint is only available in development mode")
+		return
+	}
+
+	// Delete all users from the database
+	err := cfg.db.DeleteAllUsers(r.Context())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to reset users: %v", err))
+		return
+	}
+
+	// Reset the counter back to 0
+	cfg.fileserverHits.Store(0)
+
+	// Set the header and status code
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -46,43 +209,6 @@ func (cfg *apiConfig) metricsHandler(w http.ResponseWriter, r *http.Request) {
 		</html>`, count)))
 }
 
-func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
-	// Reset the counter back to 0
-	cfg.fileserverHits.Store(0)
-
-	// Set the header and status code
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-
-	// Write a response if needed
-	w.WriteHeader(http.StatusOK)
-}
-
-func (cfg *apiConfig) validationHandler(w http.ResponseWriter, r *http.Request) {
-	type parameters struct {
-		Body string `json:"body"`
-	}
-
-	type response struct {
-		CleanedBody string `json:"cleaned_body"`
-	}
-
-	decoder := json.NewDecoder(r.Body)
-	params := parameters{}
-	err := decoder.Decode(&params)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
-		return
-	}
-
-	if len(params.Body) > 140 {
-		respondWithError(w, http.StatusBadRequest, "Chirp is too long")
-		return
-	}
-
-	// Clean the text and respond with the cleaned version
-	cleanedText := cleanProfaneWords(params.Body)
-	respondWithJSON(w, http.StatusOK, response{CleanedBody: cleanedText})
-}
 
 func cleanProfaneWords(text string) string {
 	words := strings.Split(text, " ")
@@ -108,7 +234,26 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 }
 
 func main() {
-	apiCfg := apiConfig{}
+	// Load .env file
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
+
+	// Connect to the database
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Create a new API config
+	apiCfg := apiConfig{
+		fileserverHits: atomic.Int32{},
+		db:             database.New(db),
+		platform:       os.Getenv("PLATFORM"),
+	}
+
 	mux := http.NewServeMux()
 
 	// Serve files from the root directory
@@ -120,17 +265,18 @@ func main() {
 	// Register the handler for /app - this will catch both /app and /app/
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(handler))
 
-	mux.HandleFunc("GET /admin/metrics", apiCfg.metricsHandler)
-	mux.HandleFunc("POST /admin/reset", apiCfg.resetHandler)
-	mux.HandleFunc("GET /api/healthz", healthzHandler)
-	mux.HandleFunc("POST /api/validate_chirp", apiCfg.validationHandler)
+	mux.HandleFunc("/admin/metrics", apiCfg.metricsHandler)
+	mux.HandleFunc("/admin/reset", apiCfg.resetHandler)
+	mux.HandleFunc("/api/healthz", healthzHandler)
+	mux.HandleFunc("/api/users", apiCfg.createUserHandler)
+	mux.HandleFunc("/api/chirps", apiCfg.chirpsHandler)
 
 	server := http.Server{
 		Addr:    ":8080",
 		Handler: mux,
 	}
 
-	err := server.ListenAndServe()
+	err = server.ListenAndServe()
 	if err != nil {
 		log.Fatal(err)
 	}
