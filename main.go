@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/epenick123/chirpy/internal/auth"
+
 	"github.com/epenick123/chirpy/internal/database"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -49,9 +51,9 @@ type chirpResponse struct {
 func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Body   string `json:"body"`
-		UserID string `json:"user_id"`  // Make sure this json tag is correct
+		UserID string `json:"user_id"` // Make sure this json tag is correct
 	}
-	
+
 	req := r.Method
 	if req == http.MethodPost {
 		// Decode JSON from the request body
@@ -70,7 +72,7 @@ func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		user, err := cfg.db.GetUser(r.Context(), userID)
+		user, err := cfg.db.GetUserByID(r.Context(), userID)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				respondWithError(w, http.StatusNotFound, "User not found")
@@ -85,7 +87,6 @@ func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
 
 		fmt.Printf("%+v\n", cfg.db)
 
-
 		// Clean profanity and return response
 		cleanedText := cleanProfaneWords(params.Body)
 		// Ensure chirp body length does not exceed 140 characters
@@ -93,29 +94,27 @@ func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
 			respondWithError(w, http.StatusBadRequest, "Chirp is too long")
 			return
 		}
-		
-		newChirpID := uuid.New() // Generate the ID here
+
+		newChirpID := uuid.New()                    // Generate the ID here
 		createParams := database.CreateChirpParams{ // Use the generated struct
-    		ID:     newChirpID,
-    		Body:   cleanedText,
-    		UserID: userID,
+			ID:     newChirpID,
+			Body:   cleanedText,
+			UserID: userID,
 		}
-		
+
 		new_chirp, err := cfg.db.CreateChirp(r.Context(), createParams)
 		if err != nil {
-			respondWithError(w, http.StatusInternalServerError , "Error creating chirp")
+			respondWithError(w, http.StatusInternalServerError, "Error creating chirp")
 			return
 		}
 
 		respondWithJSON(w, http.StatusCreated, response{
-			ID: new_chirp.ID,
+			ID:        new_chirp.ID,
 			CreatedAt: new_chirp.CreatedAt,
 			UpdatedAt: new_chirp.UpdatedAt,
-			Body: new_chirp.Body,
-			UserID: new_chirp.UserID.String(),
+			Body:      new_chirp.Body,
+			UserID:    new_chirp.UserID.String(),
 		})
-
-		
 
 	} else if req == http.MethodGet {
 		chirps_slice := []database.Chirp{}
@@ -128,15 +127,15 @@ func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, chirp := range chirps_slice {
 			formatted_chirp := chirpResponse{
-				ID: chirp.ID,
+				ID:        chirp.ID,
 				CreatedAt: chirp.CreatedAt,
 				UpdatedAt: chirp.UpdatedAt,
-				Body: chirp.Body,
-				UserID: chirp.UserID.String(),
+				Body:      chirp.Body,
+				UserID:    chirp.UserID.String(),
 			}
 			formatted_slice = append(formatted_slice, formatted_chirp)
 		}
-		respondWithJSON(w,200,formatted_slice)
+		respondWithJSON(w, 200, formatted_slice)
 	} else {
 		respondWithError(w, http.StatusBadRequest, "HTTP request error")
 		return
@@ -158,20 +157,21 @@ func (cfg *apiConfig) singleChirpHandler(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, 500, "Other Database Error")
 		return
 	}
-	formatted_chirp := chirpResponse {
-		ID: found_chirp.ID,
+	formatted_chirp := chirpResponse{
+		ID:        found_chirp.ID,
 		CreatedAt: found_chirp.CreatedAt,
 		UpdatedAt: found_chirp.UpdatedAt,
-		Body: found_chirp.Body,
-		UserID: found_chirp.UserID.String(),
+		Body:      found_chirp.Body,
+		UserID:    found_chirp.UserID.String(),
 	}
-	respondWithJSON(w, 200, formatted_chirp) 
+	respondWithJSON(w, 200, formatted_chirp)
 }
 
 func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) {
 	// Define the expected request structure
 	type parameters struct {
-		Email string `json:"email"`
+		Password string `json:"password"`
+		Email    string `json:"email"`
 	}
 
 	// Parse JSON from the request body
@@ -183,11 +183,21 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	user, err := cfg.db.CreateUser(r.Context(), params.Email)
-if err != nil {
-    respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to create user: %v", err))
-    return
-}
+	hashedPassword, err := auth.HashPassword(params.Password)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not hash password")
+		return
+	}
+
+	user_params := database.CreateUserParams{
+		Email:          params.Email,
+		HashedPassword: hashedPassword,
+	}
+	user, err := cfg.db.CreateUser(r.Context(), user_params)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to create user: %v", err))
+		return
+	}
 
 	responseUser := User{
 		ID:        user.ID.String(),
@@ -198,6 +208,43 @@ if err != nil {
 
 	respondWithJSON(w, http.StatusCreated, responseUser)
 
+}
+
+func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+	// Now params.Email and params.Password are filled from the JSON body.
+
+	user, err := cfg.db.GetUserByEmail(r.Context(), params.Email)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
+		return
+	}
+
+	err = auth.CheckPasswordHash(params.Password, user.HashedPassword)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
+		return
+	}
+
+	responseUser := User{
+		ID:        user.ID.String(),
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	}
+
+	respondWithJSON(w, 200, responseUser)
 }
 
 func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
@@ -257,7 +304,6 @@ func (cfg *apiConfig) metricsHandler(w http.ResponseWriter, r *http.Request) {
   		</body>
 		</html>`, count)))
 }
-
 
 func cleanProfaneWords(text string) string {
 	words := strings.Split(text, " ")
@@ -320,6 +366,7 @@ func main() {
 	mux.HandleFunc("/api/users", apiCfg.createUserHandler)
 	mux.HandleFunc("/api/chirps", apiCfg.chirpsHandler)
 	mux.HandleFunc("/api/chirps/{chirpID}", apiCfg.singleChirpHandler)
+	mux.HandleFunc("/api/login", apiCfg.loginHandler)
 
 	server := http.Server{
 		Addr:    ":8080",
