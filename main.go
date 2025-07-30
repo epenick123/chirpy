@@ -165,7 +165,7 @@ func (cfg *apiConfig) singleChirpHandler(w http.ResponseWriter, r *http.Request)
 		Body: found_chirp.Body,
 		UserID: found_chirp.UserID.String(),
 	}
-	respondWithJSON(w, 200, formatted_chirp)
+	respondWithJSON(w, 200, formatted_chirp) 
 }
 
 func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) {
