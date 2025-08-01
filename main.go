@@ -4,19 +4,17 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/epenick123/chirpy/internal/auth"
+	"github.com/epenick123/chirpy/internal/database"
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 	"log"
 	"net/http"
 	"os"
 	"strings"
 	"sync/atomic"
 	"time"
-
-	"github.com/epenick123/chirpy/internal/auth"
-
-	"github.com/epenick123/chirpy/internal/database"
-	"github.com/google/uuid"
-	"github.com/joho/godotenv"
-	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
