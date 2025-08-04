@@ -26,11 +26,12 @@ type apiConfig struct {
 }
 
 type User struct {
-	ID        string    `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
-	Token     string    `json:"token,omitempty"`
+	ID           string    `json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Email        string    `json:"email"`
+	Token        string    `json:"token,omitempty"`
+	RefreshToken string    `json:"refresh_token,omitempty"`
 }
 
 type response struct {
@@ -216,9 +217,8 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 
 func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Email            string `json:"email"`
-		Password         string `json:"password"`
-		ExpiresInSeconds *int   `json:"expires_in_seconds,omitempty"` // Optional field
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -242,30 +242,84 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expires_in := 3600 // Default 1 hour
-	if params.ExpiresInSeconds != nil {
-		if *params.ExpiresInSeconds > 3600 {
-			expires_in = 3600 // Cap at 1 hour
-		} else {
-			expires_in = *params.ExpiresInSeconds
-		}
-	}
-
-	token, err := auth.MakeJWT(user.ID, cfg.jwtsecret, time.Duration(expires_in)*time.Second)
+	token, err := auth.MakeJWT(user.ID, cfg.jwtsecret, time.Hour) // always one hour
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Failed to create JWT")
 		return
 	}
 
+	refresh_token, err := auth.MakeRefreshToken()
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to create refresh token")
+		return
+	}
+
 	responseUser := User{
-		ID:        user.ID.String(),
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
-		Token:     token,
+		ID:           user.ID.String(),
+		CreatedAt:    user.CreatedAt,
+		UpdatedAt:    user.UpdatedAt,
+		Email:        user.Email,
+		Token:        token,
+		RefreshToken: refresh_token,
+	}
+
+	expiresAt := time.Now().Add(60 * 24 * time.Hour) // 60 days from now
+	_, err = cfg.db.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+		Token:     refresh_token,
+		UserID:    user.ID,
+		ExpiresAt: expiresAt,
+	})
+	if err != nil {
+		// Handle error (don't return the token if DB insert fails!)
+		respondWithError(w, http.StatusInternalServerError, "Failed to create refresh token")
+		return
 	}
 
 	respondWithJSON(w, 200, responseUser)
+}
+
+func (cfg *apiConfig) refreshHandler(w http.ResponseWriter, r *http.Request) {
+	header := r.Header.Get("Authorization") // Extract the token from the Authorization header
+	parts := strings.Split(header, " ")
+	if len(parts) != 2 || parts[0] != "Bearer" {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	refresh_token := parts[1]
+
+	refreshTokenRow, err := cfg.db.GetRefreshToken(r.Context(), refresh_token)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+	token, err := auth.MakeJWT(refreshTokenRow.UserID, cfg.jwtsecret, time.Hour)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	respondWithJSON(w, 200, map[string]string{
+		"token": token,
+	})
+
+}
+
+func (cfg *apiConfig) revokeHandler(w http.ResponseWriter, r *http.Request) {
+	header := r.Header.Get("Authorization")
+	parts := strings.Split(header, " ")
+	if len(parts) != 2 || parts[0] != "Bearer" {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+	refresh_token := parts[1]
+
+	err := cfg.db.RevokeRefreshToken(r.Context(), refresh_token)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+	w.WriteHeader(204)
 }
 
 func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
@@ -389,6 +443,8 @@ func main() {
 	mux.HandleFunc("/api/chirps", apiCfg.chirpsHandler)
 	mux.HandleFunc("/api/chirps/{chirpID}", apiCfg.singleChirpHandler)
 	mux.HandleFunc("/api/login", apiCfg.loginHandler)
+	mux.HandleFunc("/api/refresh", apiCfg.refreshHandler)
+	mux.HandleFunc("/api/revoke", apiCfg.revokeHandler)
 
 	server := http.Server{
 		Addr:    ":8080",
