@@ -148,70 +148,191 @@ func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) singleChirpHandler(w http.ResponseWriter, r *http.Request) {
-	path_value := r.PathValue("chirpID")
-	requested_id, err := uuid.Parse(path_value)
-	if err != nil {
-		respondWithError(w, 404, "Chirp UUID error")
+	req := r.Method
+	if req == http.MethodDelete {
+
+		header := r.Header.Get("Authorization") // Extract the token from the Authorization header
+		parts := strings.Split(header, " ")
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
+
+		token := parts[1]
+		user_id, err := auth.ValidateJWT(token, cfg.jwtsecret)
+		if err != nil {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
+
+		path_value := r.PathValue("chirpID")
+		requested_id, err := uuid.Parse(path_value)
+		if err != nil {
+			respondWithError(w, 404, "Chirp UUID error")
+			return
+		}
+
+		to_delete, err := cfg.db.GetChirp(r.Context(), requested_id)
+		if err != nil {
+			respondWithError(w, 404, "Chirp not found")
+			return
+		}
+
+		// Check if the authenticated user owns this chirp
+		if to_delete.UserID != user_id {
+			respondWithError(w, 403, "Forbidden")
+			return
+		}
+		params := database.DeleteChirpByIDParams{
+			ID:     to_delete.ID,
+			UserID: to_delete.UserID,
+		}
+
+		// User owns the chirp, so delete it
+		err = cfg.db.DeleteChirpByID(r.Context(), params)
+		if err != nil {
+			respondWithError(w, 500, "Failed to delete chirp")
+			return
+		}
+
+		// Success - return 204
+		w.WriteHeader(204)
 		return
 	}
-	found_chirp, err := cfg.db.GetChirp(r.Context(), requested_id)
-	if err == sql.ErrNoRows {
-		respondWithError(w, 404, "Error retrieving Chirp")
-		return
-	} else if err != nil {
-		respondWithError(w, 500, "Other Database Error")
-		return
+
+	if req == http.MethodGet {
+		path_value := r.PathValue("chirpID")
+		requested_id, err := uuid.Parse(path_value)
+		if err != nil {
+			respondWithError(w, 404, "Chirp UUID error")
+			return
+		}
+		found_chirp, err := cfg.db.GetChirp(r.Context(), requested_id)
+		if err == sql.ErrNoRows {
+			respondWithError(w, 404, "Error retrieving Chirp")
+			return
+		} else if err != nil {
+			respondWithError(w, 500, "Other Database Error")
+			return
+		}
+		formatted_chirp := chirpResponse{
+			ID:        found_chirp.ID,
+			CreatedAt: found_chirp.CreatedAt,
+			UpdatedAt: found_chirp.UpdatedAt,
+			Body:      found_chirp.Body,
+			UserID:    found_chirp.UserID.String(),
+		}
+		respondWithJSON(w, 200, formatted_chirp)
 	}
-	formatted_chirp := chirpResponse{
-		ID:        found_chirp.ID,
-		CreatedAt: found_chirp.CreatedAt,
-		UpdatedAt: found_chirp.UpdatedAt,
-		Body:      found_chirp.Body,
-		UserID:    found_chirp.UserID.String(),
-	}
-	respondWithJSON(w, 200, formatted_chirp)
 }
 
-func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) {
-	// Define the expected request structure
-	type parameters struct {
-		Password string `json:"password"`
-		Email    string `json:"email"`
+func (cfg *apiConfig) usersHandler(w http.ResponseWriter, r *http.Request) {
+	req := r.Method
+
+	if req == http.MethodPost {
+		// Define the expected request structure
+		type parameters struct {
+			Password string `json:"password"`
+			Email    string `json:"email"`
+		}
+
+		// Parse JSON from the request body
+		decoder := json.NewDecoder(r.Body)
+		params := parameters{}
+		err := decoder.Decode(&params)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+			return
+		}
+
+		hashedPassword, err := auth.HashPassword(params.Password)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "Could not hash password")
+			return
+		}
+
+		user_params := database.CreateUserParams{
+			Email:          params.Email,
+			HashedPassword: hashedPassword,
+		}
+		user, err := cfg.db.CreateUser(r.Context(), user_params)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to create user: %v", err))
+			return
+		}
+
+		responseUser := User{
+			ID:        user.ID.String(),
+			CreatedAt: user.CreatedAt,
+			UpdatedAt: user.UpdatedAt,
+			Email:     user.Email,
+		}
+
+		respondWithJSON(w, http.StatusCreated, responseUser)
 	}
 
-	// Parse JSON from the request body
-	decoder := json.NewDecoder(r.Body)
-	params := parameters{}
-	err := decoder.Decode(&params)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
-		return
-	}
+	if req == http.MethodPut {
 
-	hashedPassword, err := auth.HashPassword(params.Password)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Could not hash password")
-		return
-	}
+		type parameters struct {
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
 
-	user_params := database.CreateUserParams{
-		Email:          params.Email,
-		HashedPassword: hashedPassword,
-	}
-	user, err := cfg.db.CreateUser(r.Context(), user_params)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to create user: %v", err))
-		return
-	}
+		header := r.Header.Get("Authorization") // Extract the token from the Authorization header
+		parts := strings.Split(header, " ")
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
 
-	responseUser := User{
-		ID:        user.ID.String(),
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
-	}
+		token := parts[1]
+		user_id, err := auth.ValidateJWT(token, cfg.jwtsecret)
+		if err != nil {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
 
-	respondWithJSON(w, http.StatusCreated, responseUser)
+		decoder := json.NewDecoder(r.Body)
+		params := parameters{}
+		err = decoder.Decode(&params)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+			return
+		}
+		// Now params.Email and params.Password are filled from the JSON body.
+
+		hashedPassword, err := auth.HashPassword(params.Password)
+		if err != nil {
+			respondWithError(w, 500, "Internal Server Error")
+			return
+		}
+
+		err = cfg.db.UpdateEmailAndPassword(r.Context(), database.UpdateEmailAndPasswordParams{
+			Email:          params.Email,
+			HashedPassword: hashedPassword,
+			ID:             user_id,
+		})
+		if err != nil {
+			respondWithError(w, 500, "Internal Server Error")
+			return
+		}
+
+		updatedUser, err := cfg.db.GetUserByID(r.Context(), user_id)
+		if err != nil {
+			respondWithError(w, 500, "Internal Server Error")
+			return
+		}
+
+		// Prepare response (hide password)
+		responseUser := User{
+			ID:        updatedUser.ID.String(),
+			CreatedAt: updatedUser.CreatedAt,
+			UpdatedAt: updatedUser.UpdatedAt,
+			Email:     updatedUser.Email,
+		}
+
+		respondWithJSON(w, http.StatusOK, responseUser)
+	}
 
 }
 
@@ -331,8 +452,14 @@ func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete all users from the database
-	err := cfg.db.DeleteAllUsers(r.Context())
+	err := cfg.db.DeleteAllRefreshTokens(r.Context())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to delete refresh tokens: %v", err))
+		return
+	}
+
+	// Then delete all users
+	err = cfg.db.DeleteAllUsers(r.Context())
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to reset users: %v", err))
 		return
@@ -439,7 +566,7 @@ func main() {
 	mux.HandleFunc("/admin/metrics", apiCfg.metricsHandler)
 	mux.HandleFunc("/admin/reset", apiCfg.resetHandler)
 	mux.HandleFunc("/api/healthz", healthzHandler)
-	mux.HandleFunc("/api/users", apiCfg.createUserHandler)
+	mux.HandleFunc("/api/users", apiCfg.usersHandler)
 	mux.HandleFunc("/api/chirps", apiCfg.chirpsHandler)
 	mux.HandleFunc("/api/chirps/{chirpID}", apiCfg.singleChirpHandler)
 	mux.HandleFunc("/api/login", apiCfg.loginHandler)

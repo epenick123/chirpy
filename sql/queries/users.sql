@@ -47,3 +47,16 @@ WHERE token = $1 AND revoked_at IS NULL AND expires_at > NOW();
 UPDATE refresh_tokens
 SET revoked_at = NOW(), updated_at = NOW()
 WHERE token = $1;
+
+-- name: UpdateEmailAndPassword :exec
+UPDATE users
+SET email = $1,
+    hashed_password = $2
+WHERE id = $3;
+
+-- name: DeleteAllRefreshTokens :exec
+DELETE FROM refresh_tokens;
+
+-- name: DeleteChirpByID :exec
+DELETE FROM chirps
+WHERE id = $1 AND user_id = $2;

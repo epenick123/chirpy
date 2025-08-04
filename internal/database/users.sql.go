@@ -93,12 +93,36 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 	return i, err
 }
 
+const deleteAllRefreshTokens = `-- name: DeleteAllRefreshTokens :exec
+DELETE FROM refresh_tokens
+`
+
+func (q *Queries) DeleteAllRefreshTokens(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteAllRefreshTokens)
+	return err
+}
+
 const deleteAllUsers = `-- name: DeleteAllUsers :exec
 DELETE FROM users
 `
 
 func (q *Queries) DeleteAllUsers(ctx context.Context) error {
 	_, err := q.db.ExecContext(ctx, deleteAllUsers)
+	return err
+}
+
+const deleteChirpByID = `-- name: DeleteChirpByID :exec
+DELETE FROM chirps
+WHERE id = $1 AND user_id = $2
+`
+
+type DeleteChirpByIDParams struct {
+	ID     uuid.UUID
+	UserID uuid.UUID
+}
+
+func (q *Queries) DeleteChirpByID(ctx context.Context, arg DeleteChirpByIDParams) error {
+	_, err := q.db.ExecContext(ctx, deleteChirpByID, arg.ID, arg.UserID)
 	return err
 }
 
@@ -224,5 +248,23 @@ WHERE token = $1
 
 func (q *Queries) RevokeRefreshToken(ctx context.Context, token string) error {
 	_, err := q.db.ExecContext(ctx, revokeRefreshToken, token)
+	return err
+}
+
+const updateEmailAndPassword = `-- name: UpdateEmailAndPassword :exec
+UPDATE users
+SET email = $1,
+    hashed_password = $2
+WHERE id = $3
+`
+
+type UpdateEmailAndPasswordParams struct {
+	Email          string
+	HashedPassword string
+	ID             uuid.UUID
+}
+
+func (q *Queries) UpdateEmailAndPassword(ctx context.Context, arg UpdateEmailAndPasswordParams) error {
+	_, err := q.db.ExecContext(ctx, updateEmailAndPassword, arg.Email, arg.HashedPassword, arg.ID)
 	return err
 }
