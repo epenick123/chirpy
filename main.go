@@ -4,23 +4,25 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/epenick123/chirpy/internal/auth"
-	"github.com/epenick123/chirpy/internal/database"
-	"github.com/google/uuid"
-	"github.com/joho/godotenv"
-	_ "github.com/lib/pq"
 	"log"
 	"net/http"
 	"os"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/epenick123/chirpy/internal/auth"
+	"github.com/epenick123/chirpy/internal/database"
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
 	platform       string
+	jwtsecret      string
 }
 
 type User struct {
@@ -28,6 +30,7 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	Token     string    `json:"token,omitempty"`
 }
 
 type response struct {
@@ -48,29 +51,32 @@ type chirpResponse struct {
 
 func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Body   string `json:"body"`
-		UserID string `json:"user_id"` // Make sure this json tag is correct
+		Body string `json:"body"`
 	}
 
 	req := r.Method
 	if req == http.MethodPost {
+		token, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
+		user_id, err := auth.ValidateJWT(token, cfg.jwtsecret)
+		if err != nil {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
+
 		// Decode JSON from the request body
 		decoder := json.NewDecoder(r.Body)
 		params := parameters{}
-		err := decoder.Decode(&params)
+		err = decoder.Decode(&params)
 		if err != nil {
 			respondWithError(w, http.StatusInternalServerError, "Something went wrong")
 			return
 		}
 
-		// Convert the UserID to a UUID
-		userID, err := uuid.Parse(params.UserID)
-		if err != nil {
-			respondWithError(w, http.StatusInternalServerError, "Something went wrong")
-			return
-		}
-
-		user, err := cfg.db.GetUserByID(r.Context(), userID)
+		user, err := cfg.db.GetUserByID(r.Context(), user_id)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				respondWithError(w, http.StatusNotFound, "User not found")
@@ -97,7 +103,7 @@ func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
 		createParams := database.CreateChirpParams{ // Use the generated struct
 			ID:     newChirpID,
 			Body:   cleanedText,
-			UserID: userID,
+			UserID: user_id,
 		}
 
 		new_chirp, err := cfg.db.CreateChirp(r.Context(), createParams)
@@ -210,8 +216,9 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 
 func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email            string `json:"email"`
+		Password         string `json:"password"`
+		ExpiresInSeconds *int   `json:"expires_in_seconds,omitempty"` // Optional field
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -235,11 +242,27 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	expires_in := 3600 // Default 1 hour
+	if params.ExpiresInSeconds != nil {
+		if *params.ExpiresInSeconds > 3600 {
+			expires_in = 3600 // Cap at 1 hour
+		} else {
+			expires_in = *params.ExpiresInSeconds
+		}
+	}
+
+	token, err := auth.MakeJWT(user.ID, cfg.jwtsecret, time.Duration(expires_in)*time.Second)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to create JWT")
+		return
+	}
+
 	responseUser := User{
 		ID:        user.ID.String(),
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email:     user.Email,
+		Token:     token,
 	}
 
 	respondWithJSON(w, 200, responseUser)
@@ -345,6 +368,7 @@ func main() {
 		fileserverHits: atomic.Int32{},
 		db:             database.New(db),
 		platform:       os.Getenv("PLATFORM"),
+		jwtsecret:      os.Getenv("JWT_SECRET"),
 	}
 
 	mux := http.NewServeMux()
