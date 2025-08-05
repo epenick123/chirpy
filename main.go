@@ -23,6 +23,7 @@ type apiConfig struct {
 	db             *database.Queries
 	platform       string
 	jwtsecret      string
+	polkaKey       string
 }
 
 type User struct {
@@ -32,6 +33,7 @@ type User struct {
 	Email        string    `json:"email"`
 	Token        string    `json:"token,omitempty"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
+	IsChirpyRed  bool      `json:"is_chirpy_red"`
 }
 
 type response struct {
@@ -262,10 +264,11 @@ func (cfg *apiConfig) usersHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		responseUser := User{
-			ID:        user.ID.String(),
-			CreatedAt: user.CreatedAt,
-			UpdatedAt: user.UpdatedAt,
-			Email:     user.Email,
+			ID:          user.ID.String(),
+			CreatedAt:   user.CreatedAt,
+			UpdatedAt:   user.UpdatedAt,
+			Email:       user.Email,
+			IsChirpyRed: user.IsChirpyRed,
 		}
 
 		respondWithJSON(w, http.StatusCreated, responseUser)
@@ -325,10 +328,11 @@ func (cfg *apiConfig) usersHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Prepare response (hide password)
 		responseUser := User{
-			ID:        updatedUser.ID.String(),
-			CreatedAt: updatedUser.CreatedAt,
-			UpdatedAt: updatedUser.UpdatedAt,
-			Email:     updatedUser.Email,
+			ID:          updatedUser.ID.String(),
+			CreatedAt:   updatedUser.CreatedAt,
+			UpdatedAt:   updatedUser.UpdatedAt,
+			Email:       updatedUser.Email,
+			IsChirpyRed: updatedUser.IsChirpyRed,
 		}
 
 		respondWithJSON(w, http.StatusOK, responseUser)
@@ -382,6 +386,7 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 		Email:        user.Email,
 		Token:        token,
 		RefreshToken: refresh_token,
+		IsChirpyRed:  user.IsChirpyRed,
 	}
 
 	expiresAt := time.Now().Add(60 * 24 * time.Hour) // 60 days from now
@@ -507,6 +512,52 @@ func (cfg *apiConfig) metricsHandler(w http.ResponseWriter, r *http.Request) {
 		</html>`, count)))
 }
 
+func (cfg *apiConfig) webhooksHandler(w http.ResponseWriter, r *http.Request) {
+	type event struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserID string `json:"user_id"`
+		} `json:"data"`
+	}
+
+	polkaKey, err := auth.GetAPIKey(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+	if polkaKey != cfg.polkaKey {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	events := event{}
+	decoder := json.NewDecoder(r.Body)
+	err = decoder.Decode(&events)
+	if err != nil {
+		respondWithError(w, 404, "Something went wrong")
+		return
+	}
+
+	if events.Event == "user.upgraded" {
+		user_id_string := events.Data.UserID
+		user_id, err := uuid.Parse(user_id_string)
+		if err != nil {
+			respondWithError(w, 404, "Something went wrong")
+			return
+		}
+		err = cfg.db.UpgradeToChirpyRed(r.Context(), user_id)
+		if err != nil {
+			respondWithError(w, 404, "User not found")
+			return
+		}
+		w.WriteHeader(204)
+		return
+	} else {
+		w.WriteHeader(204)
+		return
+	}
+}
+
 func cleanProfaneWords(text string) string {
 	words := strings.Split(text, " ")
 	for i, word := range words {
@@ -550,6 +601,7 @@ func main() {
 		db:             database.New(db),
 		platform:       os.Getenv("PLATFORM"),
 		jwtsecret:      os.Getenv("JWT_SECRET"),
+		polkaKey:       os.Getenv("POLKA_KEY"),
 	}
 
 	mux := http.NewServeMux()
@@ -572,6 +624,7 @@ func main() {
 	mux.HandleFunc("/api/login", apiCfg.loginHandler)
 	mux.HandleFunc("/api/refresh", apiCfg.refreshHandler)
 	mux.HandleFunc("/api/revoke", apiCfg.revokeHandler)
+	mux.HandleFunc("/api/polka/webhooks", apiCfg.webhooksHandler)
 
 	server := http.Server{
 		Addr:    ":8080",

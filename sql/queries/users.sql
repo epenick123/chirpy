@@ -13,7 +13,7 @@ RETURNING *;
 DELETE FROM users;
 
 -- name: GetUserByID :one
-SELECT id, created_at, updated_at, email
+SELECT id, created_at, updated_at, email, is_chirpy_red
 FROM users
 WHERE id = $1;
 
@@ -60,3 +60,8 @@ DELETE FROM refresh_tokens;
 -- name: DeleteChirpByID :exec
 DELETE FROM chirps
 WHERE id = $1 AND user_id = $2;
+
+-- name: UpgradeToChirpyRed :exec
+UPDATE users
+SET is_chirpy_red = TRUE
+WHERE id = $1;
