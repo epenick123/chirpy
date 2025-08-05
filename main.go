@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -124,14 +125,30 @@ func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
 		})
 
 	} else if req == http.MethodGet {
-		chirps_slice := []database.Chirp{}
+
 		formatted_slice := []chirpResponse{}
-		chirps_slice, err := cfg.db.GetChirps(r.Context())
+		authorID := r.URL.Query().Get("author_id")
+		var chirps_slice []database.Chirp
+		var err error
+
+		var uid uuid.UUID
+		if authorID != "" {
+			var parseErr error
+			uid, parseErr = uuid.Parse(authorID)
+			if parseErr != nil {
+				respondWithError(w, 400, "Invalid author_id")
+				return
+			}
+			chirps_slice, err = cfg.db.GetChirpsByAuthor(r.Context(), uid)
+		} else {
+			chirps_slice, err = cfg.db.GetChirps(r.Context())
+		}
 
 		if err != nil {
-			respondWithError(w, http.StatusBadRequest, "HTTP request error")
+			respondWithError(w, 400, "HTTP request error")
 			return
 		}
+
 		for _, chirp := range chirps_slice {
 			formatted_chirp := chirpResponse{
 				ID:        chirp.ID,
@@ -142,7 +159,22 @@ func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			formatted_slice = append(formatted_slice, formatted_chirp)
 		}
+		sortOrder := r.URL.Query().Get("sort")
+		if sortOrder == "" {
+			sortOrder = "asc"
+		}
+		if sortOrder == "asc" {
+			sort.Slice(formatted_slice, func(i, j int) bool {
+				return (formatted_slice[i].CreatedAt.Before(formatted_slice[j].CreatedAt))
+			})
+		}
+		if sortOrder == "desc" {
+			sort.Slice(formatted_slice, func(i, j int) bool {
+				return (formatted_slice[i].CreatedAt.After(formatted_slice[j].CreatedAt))
+			})
+		}
 		respondWithJSON(w, 200, formatted_slice)
+
 	} else {
 		respondWithError(w, http.StatusBadRequest, "HTTP request error")
 		return
